@@ -91,6 +91,8 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
     const ai = new GoogleGenAI({ apiKey });
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
 
+    const promptText = `Đây là ảnh chụp mặt hiển thị của công tơ điện / đồng hồ điện. Hãy quan sát kỹ các ô số thể hiện chỉ số tiêu thụ kWh (dãy số chính màu đen nằm trước ô màu đỏ lẻ 1/10 hoặc màn hình điện tử). Hãy đọc và chỉ trả về DUY NHẤT dãy chữ số nguyên này (Ví dụ: 99985, 220, 1540). Không kèm chữ kWh hay bất kỳ ký tự nào khác.`;
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: [
@@ -104,7 +106,7 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
               }
             },
             {
-              text: 'Bạn là chuyên gia đọc công tơ điện. Hãy đọc chỉ số điện (kWh) hiển thị trên mặt đồng hồ cơ hoặc điện tử này. Chỉ trả về một số nguyên duy nhất đại diện cho số kWh, không kèm theo đơn vị hay chữ viết nào khác.'
+              text: promptText
             }
           ]
         }
@@ -113,11 +115,12 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
 
     const rawText = response.text || '';
     const match = rawText.match(/\d+/);
-    const kwh = match ? parseInt(match[0]) : 0;
+    const kwh = match ? parseInt(match[0], 10) : 0;
 
     res.status(200).json({
       success: true,
       message: 'Bóc tách chỉ số đồng hồ điện thành công!',
+      kwh,
       data: { kwh }
     });
   } catch (error: any) {
