@@ -4511,6 +4511,7 @@
                 showToast('Đang quét và nhận diện chỉ số công tơ điện từ ảnh...', 'info');
 
                 let scannedKwh = null;
+                let backendErrorMessage = '';
 
                 // 1. Gửi request lên Backend API /api/ai/scan-meter
                 try {
@@ -4521,19 +4522,21 @@
                         body: JSON.stringify({ imageBase64: base64Data })
                     });
 
-                    if (response.ok) {
-                        const result = await response.json();
-                        const meterValue = result?.kwh ?? result?.meterValue ?? result?.data?.kwh ?? result?.data?.meterValue;
+                    const resData = await response.json();
+                    if (response.ok && resData.success) {
+                        const meterValue = resData.meterValue ?? resData.kwh ?? resData.data?.meterValue ?? resData.data?.kwh;
                         if (meterValue !== undefined && meterValue !== null && !isNaN(parseInt(meterValue, 10))) {
                             scannedKwh = parseInt(meterValue, 10);
                         }
+                    } else if (resData.message) {
+                        backendErrorMessage = resData.message;
                     }
                 } catch (apiErr) {
                     console.warn('Backend scan-meter không phản hồi, chuyển sang Client OCR:', apiErr);
                 }
 
-                // 2. Fallback: Nếu Backend chưa bóc tách được, chạy Client OCR Tesseract.js
-                if (scannedKwh === null && typeof Tesseract !== 'undefined') {
+                // 2. Fallback: Nếu Backend chưa bóc tách được và không phải lỗi màn hình tắt, chạy Client OCR Tesseract.js
+                if (scannedKwh === null && typeof Tesseract !== 'undefined' && !backendErrorMessage.includes('Màn hình')) {
                     try {
                         const tessResult = await Tesseract.recognize(base64Data, 'eng');
                         const tessText = tessResult?.data?.text || '';
@@ -4549,6 +4552,9 @@
                 // 3. Xử lý kết quả nhận diện
                 if (scannedKwh !== null && !isNaN(scannedKwh)) {
                     const elecNewInput = document.getElementById('inv-elec-new') || document.getElementById('inv-chiso-moi');
+                    const elecOldInput = document.getElementById('inv-elec-old') || document.getElementById('inv-chiso-cu');
+                    const oldVal = elecOldInput ? parseInt(elecOldInput.value) || 0 : 0;
+
                     if (elecNewInput) {
                         elecNewInput.value = scannedKwh;
                         elecNewInput.dispatchEvent(new Event('input'));
@@ -4557,11 +4563,18 @@
 
                     if (statusTitle) statusTitle.innerHTML = `<span class="text-emerald-600 font-extrabold"><i class="fa-solid fa-circle-check mr-1"></i>Đã nhận diện: ${scannedKwh} kWh</span>`;
                     if (statusSub) statusSub.innerText = 'Đã tự động điền chỉ số điện mới thành công';
-                    showToast(`Đã nhận diện thành công chỉ số công tơ điện: ${scannedKwh} kWh`, 'success');
+
+                    // Sanity check chỉ số mới so với chỉ số cũ
+                    if (scannedKwh < oldVal) {
+                        showToast(`Cảnh báo: Chỉ số mới (${scannedKwh}) nhỏ hơn chỉ số cũ (${oldVal}). Vui lòng kiểm tra lại ảnh!`, 'warning');
+                    } else {
+                        showToast(`Đã nhận diện thành công chỉ số công tơ điện: ${scannedKwh} kWh`, 'success');
+                    }
                 } else {
+                    const errorMsg = backendErrorMessage || 'Không đọc rõ chỉ số từ ảnh, vui lòng chụp lại hoặc nhập tay!';
                     if (statusTitle) statusTitle.innerText = 'Chưa nhận diện rõ được con số';
-                    if (statusSub) statusSub.innerText = 'Vui lòng kiểm tra lại ảnh hoặc tự nhập thủ công';
-                    showToast('Không đọc rõ chỉ số từ ảnh, vui lòng nhập tay!', 'error');
+                    if (statusSub) statusSub.innerText = errorMsg;
+                    showToast(errorMsg, 'warning');
                 }
             };
             reader.readAsDataURL(file);

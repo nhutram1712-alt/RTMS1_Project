@@ -24,7 +24,7 @@ export const scanCccd = async (req: Request, res: Response): Promise<void> => {
     // Call official Gemini Vision AI via @google/genai SDK
     const ai = new GoogleGenAI({ apiKey });
 
-    const promptText = `Đây là ảnh CCCD Việt Nam (có thể bị xoay). Hãy bóc tách và trả về DUY NHẤT dãy 12 chữ số thuộc mục Số/No. Không kèm bất kỳ ký tự nào khác.`;
+    const promptText = `Hãy quan sát ảnh Căn cước công dân Việt Nam và trích xuất đúng 12 chữ số thuộc mục 'Số / No.'. Chỉ trả về DUY NHẤT dãy 12 chữ số này. Nếu ảnh mờ không thấy rõ 12 số, trả về 'UNREADABLE'.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
@@ -43,10 +43,23 @@ export const scanCccd = async (req: Request, res: Response): Promise<void> => {
             }
           ]
         }
-      ]
+      ],
+      config: {
+        temperature: 0.0,
+        topP: 1.0
+      }
     });
 
-    const rawText = response.text || '';
+    const rawText = (response.text || '').trim();
+
+    if (rawText.includes('UNREADABLE')) {
+      res.status(422).json({
+        success: false,
+        message: 'Ảnh mờ hoặc không thấy rõ dãy 12 số CCCD. Vui lòng chụp lại rõ nét hơn!'
+      });
+      return;
+    }
+
     const match = rawText.match(/\d{12}/);
     const detectedCccd = match ? match[0] : '';
 
@@ -91,21 +104,12 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
     const ai = new GoogleGenAI({ apiKey });
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
 
-    const promptText = `Bạn là hệ thống OCR chuyên dụng đọc công tơ điện Việt Nam (EMIC 1 pha / 3 pha / điện tử).
-BƯỚC 1: Khoanh vùng DUY NHẤT ô chữ nhật hiển thị số nằm ở phía trên cùng của mặt đồng hồ (khung chứa các bánh răng số quay).
-BƯỚC 2: BỎ QUA HOÀN TOÀN tất cả các con số khác trên mặt đồng hồ:
-- Bỏ qua mã sản phẩm (VD: PDM 023-2007)
-- Bỏ qua tem kiểm định (VD: 16202, N148)
-- Bỏ qua Số SX (VD: 10 256616)
-- Bỏ qua thông số điện áp/dòng điện (220V, 10(40)A, 450 vòng/kWh, 50Hz, 2010).
-
-BƯỚC 3: Đọc dãy số trong ô bánh răng theo quy tắc:
-- Các chữ số nằm trong khung NỀN ĐEN: Là phần số nguyên kWh.
-- Chữ số cuối cùng nằm trong khung NỀN ĐỎ (nếu có): Là phần thập phân (1/10 kWh).
-- Chỉ lấy phần SỐ NGUYÊN (nền đen). Nếu các bánh răng đang quay lỡ cỡ giữa 2 số, lấy số nguyên rõ nhất.
-
-BƯỚC 4: Trả về kết quả:
-Chỉ trả về DUY NHẤT chuỗi các chữ số nguyên đọc được (Ví dụ: 99985 hoặc 985 hoặc 853). Tuyệt đối không thêm bất kỳ chữ cái, dấu chấm, dấu phẩy hay ký tự nào khác.`;
+    const promptText = `Bạn là hệ thống OCR công tơ điện chuyên dụng. Hãy trích xuất chỉ số tiêu thụ điện (kWh) theo quy tắc:
+1. VỚI CÔNG TƠ CƠ (EMIC bánh răng): CHỈ ĐỌC dãy số nằm trên NỀN ĐEN (phần số nguyên). BỎ QUA HOÀN TOÀN chữ số nằm trên NỀN ĐỎ ở cuối (phần thập phân 1/10).
+2. VỚI CÔNG TƠ ĐIỆN TỬ (LCD): CHỈ ĐỌC dãy số đi kèm đơn vị "kWh". Nếu màn hình hiển thị Volts (V), Amperes (A) hoặc màn hình LCD bị tối/tắt, trả về chữ "INVALID_SCREEN".
+3. BỎ QUA HOÀN TOÀN SỐ NHIỄU: Mã kiểu (DDS26, CV140, ME-41, PDM...), Số Series (No.19769888, 07772480, 256616...), Tem kiểm định (16202, 07183, N420, N148...), thông số 220V, 5(80)A, 50Hz.
+4. NẾU ẢNH MỜ / LÓA SÁNG KHÔNG THỂ KHẲNG ĐỊNH CHÍNH XÁC: Trả về chữ 'UNREADABLE'. TUYỆT ĐỐI KHÔNG TỰ ĐOÁN HOẶC BỊA SỐ.
+5. Đầu ra: Chỉ trả về DUY NHẤT chuỗi số nguyên (Ví dụ: 853, 99985, 220).`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
@@ -124,17 +128,38 @@ Chỉ trả về DUY NHẤT chuỗi các chữ số nguyên đọc được (Ví
             }
           ]
         }
-      ]
+      ],
+      config: {
+        temperature: 0.0,
+        topP: 1.0
+      }
     });
 
-    const rawText = response.text || '';
-    const cleanNumber = rawText.replace(/\D/g, ''); // Lọc bỏ toàn bộ ký tự không phải số
-    const kwh = cleanNumber ? parseInt(cleanNumber, 10) : 0;
+    const rawText = (response.text || '').trim();
 
-    if (!cleanNumber) {
+    if (rawText.includes('INVALID_SCREEN')) {
       res.status(422).json({
         success: false,
-        message: 'Không nhận diện được dãy số chỉ số điện nguyên trên mặt công tơ.'
+        message: 'Màn hình công tơ bị tắt hoặc không hiển thị chỉ số kWh.'
+      });
+      return;
+    }
+
+    if (rawText.includes('UNREADABLE')) {
+      res.status(422).json({
+        success: false,
+        message: 'Ảnh bị mờ hoặc chói sáng. Vui lòng chụp rõ nét hơn!'
+      });
+      return;
+    }
+
+    const cleanNumber = rawText.replace(/\D/g, ''); // Lọc bỏ toàn bộ ký tự không phải số
+    const meterVal = cleanNumber ? parseInt(cleanNumber, 10) : NaN;
+
+    if (isNaN(meterVal)) {
+      res.status(422).json({
+        success: false,
+        message: 'Ảnh bị mờ hoặc chói sáng. Vui lòng chụp rõ nét hơn!'
       });
       return;
     }
@@ -142,9 +167,9 @@ Chỉ trả về DUY NHẤT chuỗi các chữ số nguyên đọc được (Ví
     res.status(200).json({
       success: true,
       message: 'Bóc tách chỉ số đồng hồ điện thành công!',
-      kwh,
-      meterValue: cleanNumber,
-      data: { kwh, meterValue: cleanNumber }
+      meterValue: meterVal,
+      kwh: meterVal,
+      data: { meterValue: meterVal, kwh: meterVal }
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: 'Lỗi bóc tách công tơ điện: ' + error.message });
