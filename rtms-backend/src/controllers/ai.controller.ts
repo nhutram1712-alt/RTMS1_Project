@@ -104,12 +104,24 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
     const ai = new GoogleGenAI({ apiKey });
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
 
-    const promptText = `Bạn là hệ thống OCR công tơ điện chuyên dụng. Hãy trích xuất chỉ số tiêu thụ điện (kWh) theo quy tắc:
-1. VỚI CÔNG TƠ CƠ (EMIC bánh răng): CHỈ ĐỌC dãy số nằm trên NỀN ĐEN (phần số nguyên). BỎ QUA HOÀN TOÀN chữ số nằm trên NỀN ĐỎ ở cuối (phần thập phân 1/10).
-2. VỚI CÔNG TƠ ĐIỆN TỬ (LCD): CHỈ ĐỌC dãy số đi kèm đơn vị "kWh". Nếu màn hình hiển thị Volts (V), Amperes (A) hoặc màn hình LCD bị tối/tắt, trả về chữ "INVALID_SCREEN".
-3. BỎ QUA HOÀN TOÀN SỐ NHIỄU: Mã kiểu (DDS26, CV140, ME-41, PDM...), Số Series (No.19769888, 07772480, 256616...), Tem kiểm định (16202, 07183, N420, N148...), thông số 220V, 5(80)A, 50Hz.
-4. NẾU ẢNH MỜ / LÓA SÁNG KHÔNG THỂ KHẲNG ĐỊNH CHÍNH XÁC: Trả về chữ 'UNREADABLE'. TUYỆT ĐỐI KHÔNG TỰ ĐOÁN HOẶC BỊA SỐ.
-5. Đầu ra: Chỉ trả về DUY NHẤT chuỗi số nguyên (Ví dụ: 853, 99985, 220).`;
+    const promptText = `Bạn là hệ thống AI quét OCR chuyên dụng cho TẤT CẢ CÁC LOẠI ĐỒNG HỒ ĐIỆN (1 pha, 3 pha trực tiếp/gián tiếp) tại Việt Nam. Nhiệm vụ của bạn là trích xuất đúng chỉ số tiêu thụ điện thực tế (kWh) theo các quy tắc khắt khe sau:
+
+BƯỚC 1: XÁC ĐỊNH ĐÚNG VÙNG ĐỌC SỐ
+A. Đối với Đồng hồ cơ (1 pha 2 dây, 3 pha):
+   - ĐỒNG HỒ 6 SỐ: Chỉ đọc 5 chữ số đầu tiên nằm trong khung nền MÀU ĐEN (đây là phần số nguyên kWh). TUYỆT ĐỐI BỎ QUA 1 chữ số cuối cùng nằm trong khung nền MÀU ĐỎ (đây là giá trị 1/10 kWh). Ví dụ: hiển thị 999853 (3 nền đỏ) thì chỉ đọc '99985'.
+B. Đối với Công tơ điện tử:
+   - Chỉ tập trung vào dãy số LED có KÍCH THƯỚC LỚN NHẤT nằm ở vị trí trung tâm màn hình, ngay phía trước đơn vị 'kWh'.
+
+BƯỚC 2: BỘ LỌC ĐEN - BỎ QUA TOÀN BỘ CÁC THÔNG SỐ KỸ THUẬT SAU:
+   - Các mã tiêu chuẩn in trên vỏ: 'TCVN', 'IEC' (VD: 62053, 62053-23:2003, 62052).
+   - Điện áp & Tần số: '220V', '50Hz'.
+   - Dòng điện định mức: '5(20)A', '10(40)A', '20(80)A', '30(60)A', '50(100)A'.
+   - Hằng số xung / Số vòng: '225 vòng/kWh', '450 vòng/kWh', '900 vòng/kWh', '12.000 xung/kW.h'.
+   - Các ký hiệu OBIS nhỏ: '4.1.8.0', '1.8.0', 'L1', 'L2', 'L3'.
+
+BƯỚC 3: ĐỊNH DẠNG KẾT QUẢ ĐẦU RA:
+   - Nếu nhận diện thành công: Chỉ trả về DUY NHẤT dãy số nguyên (Ví dụ: 99985, 31072, 2169).
+   - Nếu ảnh mờ, lóa hoặc màn hình đang hiển thị sai thông số mà không thể khẳng định chắc chắn: Trả về chữ 'UNREADABLE'. TUYỆT ĐỐI KHÔNG TỰ ĐOÁN SỐ.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
@@ -154,6 +166,21 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
     }
 
     const cleanNumber = rawText.replace(/\D/g, ''); // Lọc bỏ toàn bộ ký tự không phải số
+
+    // Danh sách các con số kỹ thuật và tiêu chuẩn thường gặp để chặn
+    const blacklist = [
+      '62053', '62052', '7589', '2003', '2007', '220', '50', '225', '450', '900',
+      '520', '1040', '2080', '3060', '50100', '140', '26', '41'
+    ];
+
+    if (blacklist.includes(cleanNumber)) {
+      res.status(422).json({
+        success: false,
+        message: 'Hệ thống AI nhận diện nhầm vào thông số kỹ thuật (Tiêu chuẩn / Vòng / Điện áp) thay vì chỉ số điện năng. Vui lòng chụp rõ và gần hơn vào khung hiển thị số!'
+      });
+      return;
+    }
+
     const meterVal = cleanNumber ? parseInt(cleanNumber, 10) : NaN;
 
     if (isNaN(meterVal)) {
