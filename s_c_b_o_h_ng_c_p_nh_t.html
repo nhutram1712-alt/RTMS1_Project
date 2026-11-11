@@ -4523,7 +4523,7 @@
 
                     if (response.ok) {
                         const result = await response.json();
-                        const meterValue = result?.kwh ?? result?.data?.kwh;
+                        const meterValue = result?.kwh ?? result?.meterValue ?? result?.data?.kwh ?? result?.data?.meterValue;
                         if (meterValue !== undefined && meterValue !== null && !isNaN(parseInt(meterValue, 10))) {
                             scannedKwh = parseInt(meterValue, 10);
                         }

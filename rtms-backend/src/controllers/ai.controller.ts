@@ -91,7 +91,21 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
     const ai = new GoogleGenAI({ apiKey });
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
 
-    const promptText = `Đây là ảnh chụp mặt hiển thị của công tơ điện / đồng hồ điện. Hãy quan sát kỹ các ô số thể hiện chỉ số tiêu thụ kWh (dãy số chính màu đen nằm trước ô màu đỏ lẻ 1/10 hoặc màn hình điện tử). Hãy đọc và chỉ trả về DUY NHẤT dãy chữ số nguyên này (Ví dụ: 99985, 220, 1540). Không kèm chữ kWh hay bất kỳ ký tự nào khác.`;
+    const promptText = `Bạn là hệ thống OCR chuyên dụng đọc công tơ điện Việt Nam (EMIC 1 pha / 3 pha / điện tử).
+BƯỚC 1: Khoanh vùng DUY NHẤT ô chữ nhật hiển thị số nằm ở phía trên cùng của mặt đồng hồ (khung chứa các bánh răng số quay).
+BƯỚC 2: BỎ QUA HOÀN TOÀN tất cả các con số khác trên mặt đồng hồ:
+- Bỏ qua mã sản phẩm (VD: PDM 023-2007)
+- Bỏ qua tem kiểm định (VD: 16202, N148)
+- Bỏ qua Số SX (VD: 10 256616)
+- Bỏ qua thông số điện áp/dòng điện (220V, 10(40)A, 450 vòng/kWh, 50Hz, 2010).
+
+BƯỚC 3: Đọc dãy số trong ô bánh răng theo quy tắc:
+- Các chữ số nằm trong khung NỀN ĐEN: Là phần số nguyên kWh.
+- Chữ số cuối cùng nằm trong khung NỀN ĐỎ (nếu có): Là phần thập phân (1/10 kWh).
+- Chỉ lấy phần SỐ NGUYÊN (nền đen). Nếu các bánh răng đang quay lỡ cỡ giữa 2 số, lấy số nguyên rõ nhất.
+
+BƯỚC 4: Trả về kết quả:
+Chỉ trả về DUY NHẤT chuỗi các chữ số nguyên đọc được (Ví dụ: 99985 hoặc 985 hoặc 853). Tuyệt đối không thêm bất kỳ chữ cái, dấu chấm, dấu phẩy hay ký tự nào khác.`;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
@@ -114,14 +128,23 @@ export const scanMeter = async (req: Request, res: Response): Promise<void> => {
     });
 
     const rawText = response.text || '';
-    const match = rawText.match(/\d+/);
-    const kwh = match ? parseInt(match[0], 10) : 0;
+    const cleanNumber = rawText.replace(/\D/g, ''); // Lọc bỏ toàn bộ ký tự không phải số
+    const kwh = cleanNumber ? parseInt(cleanNumber, 10) : 0;
+
+    if (!cleanNumber) {
+      res.status(422).json({
+        success: false,
+        message: 'Không nhận diện được dãy số chỉ số điện nguyên trên mặt công tơ.'
+      });
+      return;
+    }
 
     res.status(200).json({
       success: true,
       message: 'Bóc tách chỉ số đồng hồ điện thành công!',
       kwh,
-      data: { kwh }
+      meterValue: cleanNumber,
+      data: { kwh, meterValue: cleanNumber }
     });
   } catch (error: any) {
     res.status(500).json({ success: false, message: 'Lỗi bóc tách công tơ điện: ' + error.message });
