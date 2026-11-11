@@ -1,0 +1,247 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  LANDLORD
+  TENANT
+}
+
+enum UserStatus {
+  HOAT_DONG
+  DA_TRA_PHONG_KHOA
+}
+
+enum RoomStatus {
+  TRONG
+  DANG_THUE
+  DA_COC
+  SUA_CHUA
+}
+
+enum ServiceType {
+  BAT_BUOC
+  TUY_CHON
+}
+
+enum ContractStatus {
+  HIEU_LUC
+  SAP_HET_HAN
+  HET_HIEU_LUC
+}
+
+enum RenewStatus {
+  NONE
+  PENDING
+  APPROVED
+}
+
+enum InvoiceStatus {
+  DA_THANH_TOAN
+  CHUA_THANH_TOAN
+}
+
+enum PaymentStatus {
+  DA_THANH_TOAN
+  CHO_THANH_TOAN
+  DA_DUYET
+}
+
+enum IssueStatus {
+  CHO_XU_LY
+  DA_XU_LY
+}
+
+model User {
+  id            String      @id @default(uuid())
+  username      String      @unique
+  passwordHash  String      @map("password_hash")
+  role          Role        @default(TENANT)
+  name          String
+  cccd          String?
+  phone         String?
+  email         String?
+  status        UserStatus  @default(HOAT_DONG)
+  roomId        String?     @map("room_id")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  room          Room?       @relation(fields: [roomId], references: [id])
+  landlordProfile LandlordProfile?
+  issues        Issue[]     @relation("UserIssues")
+
+  @@map("users")
+}
+
+model LandlordProfile {
+  id            String   @id @default(uuid())
+  userId        String   @unique @map("user_id")
+  name          String
+  phone         String?
+  email         String?
+  address       String?
+  cccd          String?
+  cccdFrontUrl  String?  @map("cccd_front_url")
+  cccdBackUrl   String?  @map("cccd_back_url")
+  bankName      String?  @map("bank_name")
+  bankAccount   String?  @map("bank_account")
+  bankOwner     String?  @map("bank_owner")
+  qrImgUrl      String?  @map("qr_img_url")
+  avatarUrl     String?  @map("avatar_url")
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("landlord_profiles")
+}
+
+model Room {
+  id                  String     @id // e.g., '101', '102'
+  name                String
+  floor               Int
+  area                Float
+  price               Int
+  status              RoomStatus @default(TRONG)
+  tenantName          String?    @map("tenant_name")
+  depositTenantName   String?    @map("deposit_tenant_name")
+  depositTenantPhone  String?    @map("deposit_tenant_phone")
+  depositTenantAmount Int?       @map("deposit_tenant_amount")
+  repairContent       String?    @map("repair_content")
+  repairTargetDate    DateTime?  @map("repair_target_date")
+  repairNote          String?    @map("repair_note")
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
+
+  users               User[]
+  contracts           Contract[]
+  invoices            Invoice[]
+  issues              Issue[]
+  chatMessages        ChatMessage[]
+
+  @@map("rooms")
+}
+
+model Service {
+  id        String      @id // e.g., 'SV01', 'SV02'
+  name      String
+  price     Int
+  unit      String
+  type      ServiceType @default(BAT_BUOC)
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  @@map("services")
+}
+
+model Contract {
+  id                 String         @id // e.g., 'HDT-101'
+  roomId             String         @map("room_id")
+  roomPrice          Int            @map("room_price")
+  landlordName       String         @map("landlord_name")
+  landlordPhone      String?        @map("landlord_phone")
+  landlordCccd       String?        @map("landlord_cccd")
+  landlordAddress    String?        @map("landlord_address")
+  tenantName         String         @map("tenant_name")
+  tenantPhone        String?        @map("tenant_phone")
+  tenantCccd         String?        @map("tenant_cccd")
+  tenantEmail        String?        @map("tenant_email")
+  cccdFrontImg       String?        @map("cccd_front_img")
+  cccdBackImg        String?        @map("cccd_back_img")
+  startDate          DateTime       @map("start_date")
+  duration           Int            // số tháng
+  deposit            Int
+  status             ContractStatus @default(HIEU_LUC)
+  services           Json?          // Array of service ids ['SV01', 'SV02']
+  customPrices       Json?          @map("custom_prices")
+  elecOld            Int            @default(0) @map("elec_old")
+  renewStatus        RenewStatus    @default(NONE) @map("renew_status")
+  pendingRenewMonths Int?           @map("pending_renew_months")
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+
+  room               Room           @relation(fields: [roomId], references: [id])
+
+  @@map("contracts")
+}
+
+model Invoice {
+  id              String        @id // e.g., 'HD0001'
+  roomId          String        @map("room_id")
+  period          String        // e.g., '10/2026'
+  date            DateTime
+  dueDate         DateTime      @map("due_date")
+  total           Int
+  status          InvoiceStatus @default(CHUA_THANH_TOAN)
+  elecOld         Int           @map("elec_old")
+  elecNew         Int           @map("elec_new")
+  surcharge       Int           @default(0)
+  surchargeReason String?       @map("surcharge_reason")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  room            Room          @relation(fields: [roomId], references: [id])
+  payments        Payment[]
+
+  @@map("invoices")
+}
+
+model Payment {
+  id        String        @id // e.g., 'GD88102'
+  invId     String        @map("inv_id")
+  date      DateTime      @default(now())
+  amount    Int
+  method    String
+  refNo     String?       @map("ref_no")
+  status    PaymentStatus @default(DA_THANH_TOAN)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  invoice   Invoice       @relation(fields: [invId], references: [id])
+
+  @@map("payments")
+}
+
+model Post {
+  id            String   @id @default(uuid())
+  title         String
+  content       String
+  date          DateTime @default(now())
+  readByTenants Json     @default("[]") @map("read_by_tenants") // List of user IDs who read this post
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("posts")
+}
+
+model Issue {
+  id          String      @id // e.g., 'BH001'
+  loaiSuCo    String      @map("loai_su_co")
+  moTa        String      @map("mo_ta")
+  hinhAnhUrl  String?     @map("hinh_anh_url")
+  ngayTao     DateTime    @default(now()) @map("ngay_tao")
+  trangThai   IssueStatus @default(CHO_XU_LY) @map("trang_thai")
+  maPhong     String      @map("ma_phong")
+  maNguoiDung String?     @map("ma_nguoi_dung")
+
+  room        Room        @relation(fields: [maPhong], references: [id])
+  user        User?       @relation("UserIssues", fields: [maNguoiDung], references: [id])
+
+  @@map("issues")
+}
+
+model ChatMessage {
+  id         String   @id @default(uuid())
+  roomId     String   @map("room_id")
+  senderRole String   @map("sender_role") // 'landlord' | 'tenant'
+  text       String
+  time       DateTime @default(now())
+  isRead     Boolean  @default(false) @map("is_read")
+
+  room       Room     @relation(fields: [roomId], references: [id])
+
+  @@map("chat_messages")
+}
+
