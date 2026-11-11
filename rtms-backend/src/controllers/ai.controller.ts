@@ -82,123 +82,121 @@ export const scanCccd = async (req: Request, res: Response): Promise<void> => {
   }
 };
 
-export const scanMeter = async (req: Request, res: Response): Promise<void> => {
+export const scanMeter = async (req: Request, res: Response) => {
   try {
     const { imageBase64 } = req.body;
-
     if (!imageBase64) {
-      res.status(400).json({ success: false, message: 'Vui lòng cung cấp hình ảnh công tơ điện dạng Base64.' });
-      return;
+      return res.status(400).json({ success: false, message: 'Vui lòng cung cấp ảnh công tơ.' });
     }
 
+    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey || apiKey.startsWith('AIzaSyDummy')) {
-      res.status(400).json({
+      return res.status(400).json({
         success: false,
         message: 'Chưa cấu hình GEMINI_API_KEY hợp lệ trong file .env của backend.'
       });
-      return;
     }
 
-    const ai = new GoogleGenAI({ apiKey });
-    const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    // LỚP 1: SIÊU PROMPT CHỦ ĐỘNG BỎ QUA VỎ NGOÀI
+    const promptText = `
+Bạn là máy quét OCR công tơ điện. 
+Nhiệm vụ: CHỈ ĐỌC dãy số hiển thị trên MÀN HÌNH LCD MÀU XÁM ở chính giữa (Phông chữ 7-segment màu đen kích thước LỚN NHẤT, ví dụ: 2169) HOẶC BÁNH RĂNG CÔNG TƠ CƠ (dãy số nền đen trước ô màu đỏ, ví dụ: 99985).
 
-    const promptText = `Bạn là hệ thống AI quét OCR chuyên dụng cho TẤT CẢ CÁC LOẠI ĐỒNG HỒ ĐIỆN (1 pha, 3 pha trực tiếp/gián tiếp) tại Việt Nam. Nhiệm vụ của bạn là trích xuất đúng chỉ số tiêu thụ điện thực tế (kWh) theo các quy tắc khắt khe sau:
+BỘ LỌC CẮT BỎ TUYỆT ĐỐI:
+- BỎ QUA TOÀN BỘ chữ và số in trên vỏ nhựa màu trắng xung quanh: "TCVN: 7589-22:2007", "IEC: 62053-23:2003", "12.000 xung/kW.h".
+- BỎ QUA các số OBIS nhỏ ở góc trên màn hình LCD: "4.1.8.0", "U1U2U3", "L2".
 
-BƯỚC 1: XÁC ĐỊNH ĐÚNG VÙNG ĐỌC SỐ
-A. Đối với Đồng hồ cơ (1 pha 2 dây, 3 pha):
-   - ĐỒNG HỒ 6 SỐ: Chỉ đọc 5 chữ số đầu tiên nằm trong khung nền MÀU ĐEN (đây là phần số nguyên kWh). TUYỆT ĐỐI BỎ QUA 1 chữ số cuối cùng nằm trong khung nền MÀU ĐỎ (đây là giá trị 1/10 kWh). Ví dụ: hiển thị 999853 (3 nền đỏ) thì chỉ đọc '99985'.
-B. Đối với Công tơ điện tử:
-   - Chỉ tập trung vào dãy số LED có KÍCH THƯỚC LỚN NHẤT nằm ở vị trí trung tâm màn hình, ngay phía trước đơn vị 'kWh'.
+Chỉ trả về DUY NHẤT con số hiển thị to nhất trên màn hình LCD / ô bánh răng (ví dụ: 2169 hoặc 99985). Không kèm thêm bất kỳ chữ cái hay ký tự nào.
+    `;
 
-BƯỚC 2: BỘ LỌC ĐEN - BỎ QUA TOÀN BỘ CÁC THÔNG SỐ KỸ THUẬT SAU:
-   - Các mã tiêu chuẩn in trên vỏ: 'TCVN', 'IEC' (VD: 62053, 62053-23:2003, 62052).
-   - Điện áp & Tần số: '220V', '50Hz'.
-   - Dòng điện định mức: '5(20)A', '10(40)A', '20(80)A', '30(60)A', '50(100)A'.
-   - Hằng số xung / Số vòng: '225 vòng/kWh', '450 vòng/kWh', '900 vòng/kWh', '12.000 xung/kW.h'.
-   - Các ký hiệu OBIS nhỏ: '4.1.8.0', '1.8.0', 'L1', 'L2', 'L3'.
+    let rawText = '';
 
-BƯỚC 3: ĐỊNH DẠNG KẾT QUẢ ĐẦU RA:
-   - Nếu nhận diện thành công: Chỉ trả về DUY NHẤT dãy số nguyên (Ví dụ: 99985, 31072, 2169).
-   - Nếu ảnh mờ, lóa hoặc màn hình đang hiển thị sai thông số mà không thể khẳng định chắc chắn: Trả về chữ 'UNREADABLE'. TUYỆT ĐỐI KHÔNG TỰ ĐOÁN SỐ.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
+    // Ưu tiên gọi REST endpoint Gemini Vision API v1beta
+    try {
+      const apiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
         {
-          role: 'user',
-          parts: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType: 'image/jpeg'
-              }
-            },
-            {
-              text: promptText
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: promptText },
+                { inline_data: { mime_type: 'image/jpeg', data: cleanBase64 } }
+              ]
+            }],
+            generationConfig: {
+              temperature: 0.0,
+              topP: 1.0
             }
-          ]
+          })
         }
-      ],
-      config: {
-        temperature: 0.0,
-        topP: 1.0
-      }
-    });
+      );
 
-    const rawText = (response.text || '').trim();
-
-    if (rawText.includes('INVALID_SCREEN')) {
-      res.status(422).json({
-        success: false,
-        message: 'Màn hình công tơ bị tắt hoặc không hiển thị chỉ số kWh.'
+      const data: any = await apiResponse.json();
+      rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } catch (fetchErr) {
+      // Fallback qua @google/genai SDK
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  data: cleanBase64,
+                  mimeType: 'image/jpeg'
+                }
+              },
+              {
+                text: promptText
+              }
+            ]
+          }
+        ],
+        config: {
+          temperature: 0.0,
+          topP: 1.0
+        }
       });
-      return;
+      rawText = response.text || '';
     }
 
-    if (rawText.includes('UNREADABLE')) {
-      res.status(422).json({
-        success: false,
-        message: 'Ảnh bị mờ hoặc chói sáng. Vui lòng chụp rõ nét hơn!'
-      });
-      return;
-    }
+    // LỚP 2: BỘ LỌC CỨNG BẰNG CODE (HARDCODE FILTER BACKEND)
+    // Lấy tất cả các cụm số tìm thấy trong phản hồi của AI
+    const allNumbers = rawText.match(/\d+/g) || [];
 
-    const cleanNumber = rawText.replace(/\D/g, ''); // Lọc bỏ toàn bộ ký tự không phải số
-
-    // Danh sách các con số kỹ thuật và tiêu chuẩn thường gặp để chặn
+    // Danh sách các số tiêu chuẩn/thông số kỹ thuật BẮT BUỘC BỎ QUA
     const blacklist = [
-      '62053', '62052', '7589', '2003', '2007', '220', '50', '225', '450', '900',
-      '520', '1040', '2080', '3060', '50100', '140', '26', '41'
+      '62053', '7589', '62052', '2003', '2007', '22', '23', '12000', '10000',
+      '220', '50', '450', '900', '225', '140', '26', '41'
     ];
 
-    if (blacklist.includes(cleanNumber)) {
-      res.status(422).json({
-        success: false,
-        message: 'Hệ thống AI nhận diện nhầm vào thông số kỹ thuật (Tiêu chuẩn / Vòng / Điện áp) thay vì chỉ số điện năng. Vui lòng chụp rõ và gần hơn vào khung hiển thị số!'
+    // Lọc bỏ những số nằm trong danh sách đen
+    const validNumbers = allNumbers.filter((numStr: string) => !blacklist.includes(numStr));
+
+    if (validNumbers.length > 0) {
+      // Lấy con số hợp lệ đầu tiên (ví dụ: 2169, 99985)
+      const meterValue = parseInt(validNumbers[0], 10);
+      return res.json({
+        success: true,
+        message: 'Bóc tách chỉ số đồng hồ điện thành công!',
+        meterValue,
+        kwh: meterValue,
+        data: { meterValue, kwh: meterValue }
       });
-      return;
     }
 
-    const meterVal = cleanNumber ? parseInt(cleanNumber, 10) : NaN;
-
-    if (isNaN(meterVal)) {
-      res.status(422).json({
-        success: false,
-        message: 'Ảnh bị mờ hoặc chói sáng. Vui lòng chụp rõ nét hơn!'
-      });
-      return;
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Bóc tách chỉ số đồng hồ điện thành công!',
-      meterValue: meterVal,
-      kwh: meterVal,
-      data: { meterValue: meterVal, kwh: meterVal }
+    return res.status(422).json({
+      success: false,
+      message: 'Không thể nhận diện được chỉ số điện trên màn hình LCD. Vui lòng chụp cận cảnh màn hình!'
     });
+
   } catch (error: any) {
-    res.status(500).json({ success: false, message: 'Lỗi bóc tách công tơ điện: ' + error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
