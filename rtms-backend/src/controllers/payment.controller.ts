@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { randomBytes } from 'crypto';
 import prisma from '../config/db';
 import { InvoiceStatus, PaymentStatus } from '@prisma/client';
 import { getIO } from '../config/socket';
@@ -58,14 +59,42 @@ export const submitPayment = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    const paymentId = `GD${Math.floor(10000 + Math.random() * 90000)}`;
+    if (req.user?.role !== 'TENANT' || (invoice.roomId !== req.user.roomId && invoice.tenantId !== req.user.userId)) {
+      res.status(403).json({ success: false, message: 'Hóa đơn không thuộc tài khoản khách thuê này.' });
+      return;
+    }
+
+    const paymentId = `GD${Date.now()}${randomBytes(4).toString('hex').toUpperCase()}`;
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Update invoice to DA_THANH_TOAN
-      const updatedInvoice = await tx.invoice.update({
-        where: { id: invId },
+      const currentInvoice = await tx.invoice.findUnique({ where: { id: invId } });
+      if (!currentInvoice) throw new Error('Hóa đơn không còn tồn tại.');
+      if (currentInvoice.status === InvoiceStatus.DA_THANH_TOAN) {
+        const existingPayment = await tx.payment.findFirst({ where: { invId }, orderBy: { date: 'desc' } });
+        const payment = existingPayment || await tx.payment.create({
+          data: { id: paymentId, invId, amount: currentInvoice.total, method: method || 'VietQR MBBank', refNo: refNo || `FT${Date.now()}`, status: PaymentStatus.DA_THANH_TOAN }
+        });
+        return {
+          updatedInvoice: currentInvoice,
+          payment
+        };
+      }
+      const claimed = await tx.invoice.updateMany({
+        where: { id: invId, status: InvoiceStatus.CHUA_THANH_TOAN },
         data: { status: InvoiceStatus.DA_THANH_TOAN }
       });
+      if (claimed.count === 0) {
+        const latest = await tx.invoice.findUniqueOrThrow({ where: { id: invId } });
+        const existingPayment = await tx.payment.findFirst({ where: { invId }, orderBy: { date: 'desc' } });
+        const payment = existingPayment || await tx.payment.create({
+          data: { id: paymentId, invId, amount: latest.total, method: method || 'VietQR MBBank', refNo: refNo || `FT${Date.now()}`, status: PaymentStatus.DA_THANH_TOAN }
+        });
+        return {
+          updatedInvoice: latest,
+          payment
+        };
+      }
+      const updatedInvoice = await tx.invoice.findUniqueOrThrow({ where: { id: invId } });
 
       // 2. Create Payment record
       const payment = await tx.payment.create({
@@ -86,7 +115,7 @@ export const submitPayment = async (req: Request, res: Response): Promise<void> 
     // Notify landlord real-time via Socket.IO
     try {
       const io = getIO();
-      io.emit('payment_received', {
+      if (result.payment) io.emit('payment_received', {
         invId: result.updatedInvoice.id,
         paymentId: result.payment.id,
         amount: result.payment.amount,
@@ -98,7 +127,7 @@ export const submitPayment = async (req: Request, res: Response): Promise<void> 
 
     res.status(200).json({
       success: true,
-      message: `Xác nhận thanh toán hóa đơn ${invId} thành công! Giao dịch ${paymentId} đã được ghi nhận.`,
+      message: `Xác nhận thanh toán hóa đơn ${invId} thành công! Giao dịch ${result.payment?.id || paymentId} đã được ghi nhận.`,
       data: result
     });
   } catch (error: any) {

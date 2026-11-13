@@ -622,6 +622,7 @@
                                 <button onclick="window.print()" class="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white font-bold rounded-xl text-xs flex items-center space-x-1">
                                     <i class="fa-solid fa-print"></i><span>In Hóa Đơn</span>
                                 </button>
+                                <button id="out-confirm-paid" onclick="confirmInvoicePaid(document.getElementById('out-inv-code').textContent)" class="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs">X&#225;c nh&#7853;n &#273;&#227; thanh to&#225;n</button>
                             </div>
                         </div>
 
@@ -945,7 +946,7 @@
                             </div>
                             <div class="text-left sm:text-right bg-white/10 p-3 rounded-2xl backdrop-blur-md w-full sm:w-auto">
                                 <p class="text-[10px] uppercase font-bold text-brand-200">Kỳ Tiền Nhà Hiện Tại</p>
-                                <p class="text-lg sm:text-xl font-black text-amber-300">Tháng 10/2026</p>
+                                <p id="tn-current-invoice-period" class="text-lg sm:text-xl font-black text-amber-300">Tháng 10/2026</p>
                             </div>
                         </div>
                     </div>
@@ -1984,6 +1985,41 @@
         let isSidebarCollapsed = false;
         let activeChatRoomId = '101';
 
+        function getRtmsToken() { return localStorage.getItem('rtms_token') || ''; }
+        async function rtmsApiRequest(url, options = {}) {
+            const headers = { ...(options.headers || {}) };
+            const token = getRtmsToken();
+            if (token) headers.Authorization = `Bearer ${token}`;
+            if (options.body && !(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+            const response = await fetch(url, { ...options, headers });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(payload.message || `API trả về HTTP ${response.status}`);
+            return payload.data;
+        }
+        function formatInvoiceDate(value) {
+            if (!value) return '';
+            const text = String(value);
+            const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (match) return `${match[3]}/${match[2]}/${match[1]}`;
+            const dmy = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            if (dmy) return text;
+            const parsed = new Date(text);
+            return Number.isNaN(parsed.getTime()) ? text : `${String(parsed.getDate()).padStart(2, '0')}/${String(parsed.getMonth() + 1).padStart(2, '0')}/${parsed.getFullYear()}`;
+        }
+        function invoiceIsPaid(invoice) {
+            return invoice?.statusCode === 'DA_THANH_TOAN' || String(invoice?.status || '').toLowerCase().includes('thanh to');
+        }
+        async function refreshTenantInvoices() {
+            try {
+                const result = await rtmsApiRequest('http://localhost:5000/api/bootstrap');
+                if (Array.isArray(result?.invoices)) dbInvoices = result.invoices;
+                renderTenantInvoices();
+            } catch (error) {
+                console.error('Could not refresh invoices from PostgreSQL:', error);
+                showToast('Không tải được hóa đơn mới nhất từ máy chủ.', 'error');
+            }
+        }
+
         // Toast Notification System (Top-Right Clean Light Text Badge)
         function showToast(msg, type = 'success') {
             const container = document.getElementById('toast-container');
@@ -2602,7 +2638,7 @@
             if (viewId === 'contracts') renderContracts();
             if (viewId === 'tenants') renderUsers();
             if (viewId === 'invoices') initInvoiceForm();
-            if (viewId === 'payments') renderPayments();
+            if (viewId === 'payments') { renderPayments(); refreshPaymentsFromApi(); }
             if (viewId === 'posts') renderPosts();
             if (viewId === 'issues' || viewId === 'chat') renderIssuesAndChat();
         }
@@ -2625,7 +2661,7 @@
 
             const user = currentLoggedInTenantUser || dbUsers[0];
 
-            if (viewId === 'home') renderTenantInvoices();
+            if (viewId === 'home') { renderTenantInvoices(); refreshTenantInvoices(); }
             if (viewId === 'contract') renderTenantContract();
             if (viewId === 'profile') renderMyTenantProfile();
             if (viewId === 'board') {
@@ -2949,7 +2985,7 @@
                         } else {
                             // Chưa tới hạn thanh toán (Ẩn dòng "Số kỳ chưa thanh toán")
                             const firstInv = unpaidInvoices[0];
-                            const formattedDueDate = firstInv && firstInv.dueDate ? firstInv.dueDate.split('-').reverse().join('/') : '';
+                            const formattedDueDate = firstInv ? formatInvoiceDate(firstInv.dueDate) : '';
                             paymentStatusHtml = `
                                 <div class="mt-3 p-3 bg-blue-50/70 border border-blue-300 rounded-2xl space-y-1 text-xs text-slate-800">
                                     <div class="font-bold text-blue-900 flex items-center space-x-1.5">
@@ -4593,24 +4629,28 @@
         window.handleLogout = handleLogout;
 
         // INVOICES & PAYMENTS HELPERS
+        function invoiceBillingRooms() {
+            const rooms = new Map();
+            dbContracts.filter(c => String(c.status || '').toLowerCase().startsWith('hi')).forEach(c => rooms.set(String(c.roomId), { roomId: c.roomId, tenantName: c.tenantName }));
+            dbUsers.filter(u => u.roomId).forEach(u => { if (!rooms.has(String(u.roomId))) rooms.set(String(u.roomId), { roomId: u.roomId, tenantName: u.name }); });
+            return [...rooms.values()];
+        }
+        function refreshInvoiceRoomOptions() {
+            const roomSelect = document.getElementById('inv-room-select');
+            if (!roomSelect) return;
+            const currentRoom = roomSelect.value;
+            const period = document.getElementById('inv-period')?.value.trim() || '';
+            const available = invoiceBillingRooms().filter(room => !dbInvoices.some(inv => String(inv.roomId) === String(room.roomId) && String(inv.period).trim() === period));
+            roomSelect.innerHTML = available.map(room => '<option value="' + room.roomId + '">Ph&#242;ng ' + room.roomId + ' - Kh&#225;ch thu&#234;: ' + (room.tenantName || 'Ch&#432;a g&#225;n t&#234;n') + '</option>').join('');
+            if (!available.length) roomSelect.innerHTML = '<option value="" disabled selected>Kh&#244;ng c&#242;n ph&#242;ng ch&#432;a l&#7853;p h&#243;a &#273;&#417;n cho k&#7923; n&#224;y</option>';
+            else if (available.some(room => String(room.roomId) === currentRoom)) roomSelect.value = currentRoom;
+        }
         function initInvoiceForm() {
             const roomSelect = document.getElementById('inv-room-select');
             if (!roomSelect) return;
-            roomSelect.innerHTML = '';
-
-            const activeContracts = dbContracts.filter(c => c.status === 'Hiệu lực');
-
-            if (activeContracts.length === 0) {
-                roomSelect.innerHTML = `<option value="" disabled selected>⚠️ Chưa có phòng nào đang có hợp đồng hiệu lực</option>`;
-                document.getElementById('inv-elec-old').value = '0';
-                return;
-            }
-
-            activeContracts.forEach(c => {
-                roomSelect.innerHTML += `<option value="${c.roomId}">Phòng ${c.roomId} - Khách thuê: ${c.tenantName}</option>`;
-            });
-
-            autoFillRoomData();
+            refreshInvoiceRoomOptions();
+            if (roomSelect.value) autoFillRoomData();
+            else document.getElementById('inv-elec-old').value = '0';
             onPeriodChangeSuggestDueDate();
         }
         window.initInvoiceForm = initInvoiceForm;
@@ -4642,6 +4682,9 @@
                 defaultDue.setDate(defaultDue.getDate() + 5);
                 dueDateInput.value = defaultDue.toISOString().split('T')[0];
             }
+            if (typeof refreshInvoiceRoomOptions === 'function') refreshInvoiceRoomOptions();
+            const roomSelect = document.getElementById('inv-room-select');
+            if (roomSelect?.value) autoFillRoomData();
         }
         window.onPeriodChangeSuggestDueDate = onPeriodChangeSuggestDueDate;
 
@@ -4651,8 +4694,8 @@
             const roomId = roomSelect.value;
             const contract = dbContracts.find(c => c.roomId === roomId && c.status === 'Hiệu lực');
 
-            const lastInv = dbInvoices.filter(i => i.roomId === roomId).pop();
-            const oldElec = lastInv ? lastInv.elecNew : (contract ? (contract.elecOld || 0) : 120);
+            const lastInv = dbInvoices.filter(i => String(i.roomId) === String(roomId)).sort((a, b) => String(b.period).localeCompare(String(a.period)))[0];
+            const oldElec = lastInv ? Number(lastInv.elecNew) : (contract ? Number(contract.elecOld || 0) : 0);
 
             document.getElementById('inv-elec-old').value = oldElec;
             document.getElementById('inv-elec-new').value = oldElec + 50;
@@ -4661,8 +4704,8 @@
         window.autoFillRoomData = autoFillRoomData;
 
         function updateCalculatedUnits() {
-            const oldVal = parseInt(document.getElementById('inv-elec-old').value) || 0;
-            const newVal = parseInt(document.getElementById('inv-elec-new').value) || 0;
+            const oldVal = parseFloat(document.getElementById('inv-elec-old').value) || 0;
+            const newVal = parseFloat(document.getElementById('inv-elec-new').value) || 0;
             const usedInput = document.getElementById('inv-elec-used');
             if (usedInput) {
                 usedInput.value = Math.max(0, newVal - oldVal);
@@ -4749,85 +4792,55 @@
         }
         window.removeMeterScanImage = removeMeterScanImage;
 
-        function handleExportInvoice(e) {
+        async function handleExportInvoice(e) {
             if (e && e.preventDefault) e.preventDefault();
             const roomId = document.getElementById('inv-room-select').value;
-            if (!roomId) {
-                showToast('Vui lòng chọn phòng cần lập hóa đơn!', 'error');
-                return;
-            }
-
             const period = document.getElementById('inv-period').value.trim();
             const dueDate = document.getElementById('inv-due-date').value;
-            const elecOld = parseInt(document.getElementById('inv-elec-old').value) || 0;
-            const elecNew = parseInt(document.getElementById('inv-elec-new').value) || 0;
-            const surcharge = parseInt(document.getElementById('inv-surcharge').value) || 0;
+            const elecOld = parseFloat(document.getElementById('inv-elec-old').value);
+            const elecNew = parseFloat(document.getElementById('inv-elec-new').value);
+            const surcharge = parseFloat(document.getElementById('inv-surcharge').value) || 0;
             const surchargeReason = document.getElementById('inv-surcharge-reason').value.trim();
-
-            if (!dueDate) {
-                showToast('Vui lòng chọn Hạn thanh toán!', 'error');
-                return;
-            }
-
-            if (elecNew < elecOld) {
-                showToast('Chỉ số điện mới không được nhỏ hơn chỉ số cũ!', 'error');
-                return;
-            }
-
-            const contract = dbContracts.find(c => c.roomId === roomId) || dbContracts[0];
-            const elecPrice = (contract.customPrices && contract.customPrices['SV01']) || 3500;
-            const waterPrice = (contract.customPrices && contract.customPrices['SV02']) || 80000;
-            const trashPrice = (contract.customPrices && contract.customPrices['SV03']) || 30000;
-            const wifiPrice = (contract.customPrices && contract.customPrices['SV04']) || 100000;
-            const roomPrice = contract.roomPrice || 2500000;
-
-            const elecUsed = elecNew - elecOld;
-            const elecTotal = elecUsed * elecPrice;
-            const grandTotal = roomPrice + elecTotal + waterPrice + trashPrice + wifiPrice + surcharge;
-
-            const invCode = 'HD' + String(dbInvoices.length + 1).padStart(4, '0');
-            const todayStr = new Date().toISOString().split('T')[0];
-
-            const newInv = {
-                id: invCode,
-                roomId: roomId,
-                period: period,
-                date: todayStr,
-                dueDate: dueDate, // Lưu hạn thanh toán vào dữ liệu hóa đơn
-                total: grandTotal,
-                status: 'Chưa thanh toán',
-                elecOld, elecNew, waterOld: 0, waterNew: 0, surcharge, surchargeReason
-            };
-
-            dbInvoices.unshift(newInv);
-
-            renderLandlordOverview();
-            displayInvoiceDetail(newInv);
-            renderInvoicesList();
-            showToast('Xuất hóa đơn & sinh mã VietQR thành công!', 'success');
+            if (!roomId || !period || !dueDate || !Number.isFinite(elecOld) || !Number.isFinite(elecNew)) { showToast('Vui lòng nhập đủ thông tin hóa đơn.', 'error'); return; }
+            if (elecNew < elecOld) { showToast('Chỉ số điện mới không được nhỏ hơn chỉ số cũ.', 'error'); return; }
+            const button = e?.submitter || document.querySelector('#view-ll-invoices form button[type="submit"]');
+            if (button) { button.disabled = true; }
+            try {
+                const invoice = await rtmsApiRequest('http://localhost:5000/api/invoices', { method: 'POST', body: JSON.stringify({ roomId, period, dueDate, elecOld, elecNew, surcharge, surchargeReason }) });
+                dbInvoices = [invoice, ...dbInvoices.filter(item => item.id !== invoice.id)];
+                renderLandlordOverview(); displayInvoiceDetail(invoice); renderInvoicesList(); refreshInvoiceRoomOptions();
+                showToast('Hóa đơn đã được lưu vào PostgreSQL.', 'success');
+            } catch (error) { showToast(error.message || 'Không lưu được hóa đơn.', 'error'); }
+            finally { if (button) button.disabled = false; }
         }
         window.handleExportInvoice = handleExportInvoice;
 
         function displayInvoiceDetail(inv) {
-            const contract = dbContracts.find(c => c.roomId === inv.roomId) || dbContracts[0];
-            const elecPrice = (contract.customPrices && contract.customPrices['SV01']) || 3500;
-            const waterPrice = (contract.customPrices && contract.customPrices['SV02']) || 80000;
-            const trashPrice = (contract.customPrices && contract.customPrices['SV03']) || 30000;
-            const wifiPrice = (contract.customPrices && contract.customPrices['SV04']) || 100000;
-            const roomPrice = contract.roomPrice || 2500000;
+            const contract = dbContracts.find(c => c.roomId === inv.roomId) || inv.contract || dbContracts[0] || {};
+            const savedItems = Array.isArray(inv.lineItems) ? inv.lineItems : [];
+            const savedPrice = (code, fallback) => savedItems.find(item => item.code === code)?.unitPrice ?? fallback;
+            const savedAmount = (code, fallback) => savedItems.find(item => item.code === code)?.amount ?? fallback;
+            const hasContractService = code => !Array.isArray(contract.services) || contract.services.includes(code);
+            const elecPrice = savedPrice('ELECTRICITY', (contract.customPrices && contract.customPrices['SV01']) || 3500);
+            const waterPrice = hasContractService('SV02') ? savedAmount('WATER', (contract.customPrices && contract.customPrices['SV02']) || 80000) : 0;
+            const trashPrice = hasContractService('SV03') ? savedAmount('TRASH', (contract.customPrices && contract.customPrices['SV03']) || 30000) : 0;
+            const wifiPrice = hasContractService('SV04') ? savedAmount('WIFI', (contract.customPrices && contract.customPrices['SV04']) || 100000) : 0;
+            const roomPrice = savedAmount('ROOM', contract.roomPrice || 2500000);
 
             const elecUsed = (inv.elecNew || 0) - (inv.elecOld || 0);
-            const elecTotal = elecUsed * elecPrice;
+            const elecTotal = savedAmount('ELECTRICITY', elecUsed * elecPrice);
             const grandTotal = inv.total || (roomPrice + elecTotal + waterPrice + trashPrice + wifiPrice + (inv.surcharge || 0));
 
-            const formattedDueDate = inv.dueDate ? inv.dueDate.split('-').reverse().join('/') : '';
+            const formattedDueDate = formatInvoiceDate(inv.dueDate);
+            const confirmButton = document.getElementById('out-confirm-paid');
+            if (confirmButton) confirmButton.classList.toggle('hidden', invoiceIsPaid(inv));
 
             // Hiển thị thông tin lên giao diện kết quả
             document.getElementById('out-inv-code').innerText = inv.id;
             document.getElementById('out-inv-period').innerText = inv.period;
-            document.getElementById('out-inv-date').innerText = inv.date;
-            document.getElementById('out-room-name').innerText = `Phòng ${inv.roomId}`;
-            document.getElementById('out-tenant-name').innerText = contract.tenantName || 'Khách thuê';
+            document.getElementById('out-inv-date').innerText = formatInvoiceDate(inv.date);
+            document.getElementById('out-room-name').innerText = inv.roomNumber || ('Phòng ' + inv.roomId);
+            document.getElementById('out-tenant-name').innerText = inv.tenant?.name || contract.tenantName || 'Khách thuê';
             document.getElementById('out-inv-grand-total').innerText = `${grandTotal.toLocaleString()} đ`;
 
             const tbody = document.getElementById('out-inv-tbody');
@@ -4926,32 +4939,11 @@
             const tbody = document.getElementById('ll-invoices-list-tbody');
             if (!tbody) return;
             tbody.innerHTML = '';
-
-            if (dbInvoices.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-400 italic">Chưa có hóa đơn nào được lập.</td></tr>`;
-                return;
-            }
-
+            if (!dbInvoices.length) { tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-400 italic">Ch&#432;a c&#243; h&#243;a &#273;&#417;n n&#224;o &#273;&#432;&#7907;c l&#7853;p.</td></tr>'; return; }
             dbInvoices.forEach(inv => {
-                const badge = inv.status === 'Đã thanh toán' 
-                    ? '<span class="bg-emerald-100 text-emerald-700 text-xs px-2.5 py-0.5 rounded-full font-bold">Đã thanh toán</span>' 
-                    : '<span class="bg-amber-100 text-amber-800 text-xs px-2.5 py-0.5 rounded-full font-bold">Chưa thanh toán</span>';
-
-                tbody.innerHTML += `
-                    <tr class="hover:bg-slate-50">
-                        <td class="p-3 font-bold text-slate-700">${inv.id}</td>
-                        <td class="p-3 font-extrabold text-blue-700">Phòng ${inv.roomId}</td>
-                        <td class="p-3 font-medium text-slate-800">${inv.period}</td>
-                        <td class="p-3 text-slate-600">${inv.date}</td>
-                        <td class="p-3 font-extrabold text-brand-700">${inv.total.toLocaleString()} đ</td>
-                        <td class="p-3">${badge}</td>
-                        <td class="p-3 text-right">
-                            <button onclick="viewInvoiceDetail('${inv.id}')" class="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-lg text-xs">
-                                <i class="fa-solid fa-eye mr-1"></i>Chi Tiết
-                            </button>
-                        </td>
-                    </tr>
-                `;
+                const paid = invoiceIsPaid(inv);
+                const badge = paid ? '<span class="bg-emerald-100 text-emerald-700 text-xs px-2.5 py-0.5 rounded-full font-bold">&#272;&#227; thanh to&#225;n</span>' : '<span class="bg-amber-100 text-amber-800 text-xs px-2.5 py-0.5 rounded-full font-bold">Ch&#432;a thanh to&#225;n</span>';
+                tbody.innerHTML += '<tr class="hover:bg-slate-50"><td class="p-3 font-bold text-slate-700">' + inv.id + '</td><td class="p-3 font-extrabold text-blue-700">' + (inv.roomNumber || ('Ph&#242;ng ' + inv.roomId)) + '</td><td class="p-3 font-medium text-slate-800">' + inv.period + '</td><td class="p-3 text-slate-600">' + formatInvoiceDate(inv.date) + '</td><td class="p-3 font-extrabold text-brand-700">' + Number(inv.total || 0).toLocaleString() + ' &#273;</td><td class="p-3">' + badge + '</td><td class="p-3 text-right whitespace-nowrap"><button onclick="viewInvoiceDetail(&quot;' + inv.id + '&quot;)" class="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold rounded-lg text-xs"><i class="fa-solid fa-eye mr-1"></i>Chi ti&#7871;t</button> ' + (paid ? '' : '<button onclick="confirmInvoicePaid(&quot;' + inv.id + '&quot;)" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs">X&#225;c nh&#7853;n &#273;&#227; thanh to&#225;n</button>') + '</td></tr>';
             });
         }
         window.renderInvoicesList = renderInvoicesList;
@@ -5205,43 +5197,27 @@
         window.openLandlordChatRoom = openLandlordChatRoom;
 
         // STUB / ADDITIONAL RENDERERS
+        function invoiceRoomKey(value) { return String(value || '').replace(/\D/g, ''); }
+        function invoiceBelongsToTenant(invoice, user) {
+            if (!user) return false;
+            if ((invoice.tenantId || invoice.tenant?.id) && String(invoice.tenantId || invoice.tenant.id) === String(user.id)) return true;
+            const roomKey = invoiceRoomKey(user.roomId);
+            return Boolean(roomKey && [invoice.roomId, invoice.roomNumber, invoice.room?.id, invoice.room?.name, invoice.tenant?.roomId].some(value => invoiceRoomKey(value) === roomKey));
+        }
+        function periodSortKey(value) { const m=String(value||'').match(/^(\d{1,2})\/(\d{4})$/); return m ? Number(m[2])*100+Number(m[1]) : 0; }
         function renderTenantInvoices() {
             const listEl = document.getElementById('tn-invoices-list');
             if (!listEl) return;
             listEl.innerHTML = '';
-            
-            const user = currentLoggedInTenantUser || dbUsers[0];
-            const myInvoices = dbInvoices.filter(i => i.roomId === user.roomId);
-
-            if (myInvoices.length === 0) {
-                listEl.innerHTML = `<div class="p-4 text-center text-slate-400 italic">Hiện tại chưa có hóa đơn nào cho phòng của bạn.</div>`;
-                return;
-            }
-
+            const user = currentLoggedInTenantUser;
+            const myInvoices = dbInvoices.filter(invoice => invoiceBelongsToTenant(invoice, user)).sort((a,b) => periodSortKey(b.period)-periodSortKey(a.period) || String(b.createdAt||b.date).localeCompare(String(a.createdAt||a.date)));
+            const latestPeriod = document.getElementById('tn-current-invoice-period');
+            if (latestPeriod && myInvoices[0]) latestPeriod.textContent = '\u0054h\u00e1ng ' + myInvoices[0].period;
+            if (!myInvoices.length) { listEl.innerHTML = '<div class="p-4 text-center text-slate-400 italic">Hi&#7879;n t&#7841;i ch&#432;a c&#243; h&#243;a &#273;&#417;n n&#224;o cho ph&#242;ng c&#7911;a b&#7841;n.</div>'; return; }
             myInvoices.forEach(inv => {
-                const isPaid = inv.status === 'Đã thanh toán';
-                const statusBadge = isPaid 
-                    ? '<span class="bg-emerald-100 text-emerald-700 text-xs px-2.5 py-0.5 rounded-full font-bold">Đã thanh toán</span>' 
-                    : '<span class="bg-amber-100 text-amber-800 text-xs px-2.5 py-0.5 rounded-full font-bold">Chưa thanh toán</span>';
-
-                listEl.innerHTML += `
-                    <div class="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 hover:bg-slate-100/60 transition-all">
-                        <div>
-                            <div class="flex items-center space-x-2">
-                                <span class="font-bold text-slate-800 text-sm">Hóa Đơn Kỳ ${inv.period}</span>
-                                ${statusBadge}
-                            </div>
-                            <p class="text-xs text-slate-500 mt-1">Mã HĐ: <b>${inv.id}</b> • Ngày tạo: ${inv.date}</p>
-                        </div>
-                        <div class="flex items-center space-x-3 w-full sm:w-auto justify-between sm:justify-end">
-                            <p class="text-base font-black text-brand-700">${inv.total.toLocaleString()} đ</p>
-                            <button onclick="viewTenantInvoiceDetail('${inv.id}')" class="px-3.5 py-2 ${isPaid ? 'bg-slate-200 hover:bg-slate-300 text-slate-700' : 'bg-brand-600 hover:bg-brand-700 text-white'} rounded-xl text-xs font-extrabold shadow-sm transition-all flex items-center space-x-1 shrink-0">
-                                <i class="fa-solid ${isPaid ? 'fa-eye' : 'fa-qrcode'}"></i>
-                                <span>${isPaid ? 'Xem Chi Tiết' : 'Thanh Toán VietQR'}</span>
-                            </button>
-                        </div>
-                    </div>
-                `;
+                const paid = invoiceIsPaid(inv);
+                const badge = paid ? '<span class="bg-emerald-100 text-emerald-700 text-xs px-2.5 py-0.5 rounded-full font-bold">&#272;&#227; thanh to&#225;n</span>' : '<span class="bg-amber-100 text-amber-800 text-xs px-2.5 py-0.5 rounded-full font-bold">Ch&#432;a thanh to&#225;n</span>';
+                listEl.innerHTML += '<div class="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3"><div><div class="flex items-center space-x-2"><span class="font-bold text-slate-800 text-sm">H&#243;a &#273;&#417;n k&#7923; ' + inv.period + '</span>' + badge + '</div><p class="text-xs text-slate-500 mt-1">M&#227; H&#272;: <b>' + inv.id + '</b> &#8226; Ng&#224;y l&#7853;p: ' + formatInvoiceDate(inv.date) + '</p></div><div class="flex items-center space-x-3 w-full sm:w-auto justify-between sm:justify-end"><p class="text-base font-black text-brand-700">' + Number(inv.total||0).toLocaleString() + ' &#273;</p><button onclick="viewTenantInvoiceDetail(&quot;' + inv.id + '&quot;)" class="px-3.5 py-2 ' + (paid ? 'bg-slate-200 hover:bg-slate-300 text-slate-700' : 'bg-brand-600 hover:bg-brand-700 text-white') + ' rounded-xl text-xs font-extrabold">' + (paid ? 'Xem chi ti&#7871;t' : 'Xem chi ti&#7871;t & VietQR') + '</button></div></div>';
             });
         }
         window.renderTenantInvoices = renderTenantInvoices;
@@ -5253,18 +5229,21 @@
             if (!inv) return;
             currentActiveTenantInvId = invId;
 
-            const contract = dbContracts.find(c => c.roomId === inv.roomId) || dbContracts[0];
-            const elecPrice = (contract.customPrices && contract.customPrices['SV01']) || 3500;
-            const waterPrice = (contract.customPrices && contract.customPrices['SV02']) || 80000;
-            const trashPrice = (contract.customPrices && contract.customPrices['SV03']) || 30000;
-            const wifiPrice = (contract.customPrices && contract.customPrices['SV04']) || 100000;
-            const roomPrice = contract.roomPrice || 2500000;
+            const contract = dbContracts.find(c => c.roomId === inv.roomId) || inv.contract || dbContracts[0] || {};
+            const savedItems = Array.isArray(inv.lineItems) ? inv.lineItems : [];
+            const savedPrice = (code, fallback) => savedItems.find(item => item.code === code)?.unitPrice ?? fallback;
+            const savedAmount = (code, fallback) => savedItems.find(item => item.code === code)?.amount ?? fallback;
+            const elecPrice = savedPrice('ELECTRICITY', (contract.customPrices && contract.customPrices['SV01']) || 3500);
+            const waterPrice = savedAmount('WATER', (contract.customPrices && contract.customPrices['SV02']) || 80000);
+            const trashPrice = savedAmount('TRASH', (contract.customPrices && contract.customPrices['SV03']) || 30000);
+            const wifiPrice = savedAmount('WIFI', (contract.customPrices && contract.customPrices['SV04']) || 100000);
+            const roomPrice = savedAmount('ROOM', contract.roomPrice || 2500000);
 
             const elecUsed = (inv.elecNew || 0) - (inv.elecOld || 0);
-            const elecTotal = elecUsed * elecPrice;
+            const elecTotal = savedAmount('ELECTRICITY', elecUsed * elecPrice);
             const grandTotal = inv.total || (roomPrice + elecTotal + waterPrice + trashPrice + wifiPrice + (inv.surcharge || 0));
 
-            const isPaid = inv.status === 'Đã thanh toán';
+            const isPaid = invoiceIsPaid(inv);
 
             document.getElementById('tn-modal-inv-title').innerText = `Chi Tiết Hóa Đơn ${inv.id} (Kỳ ${inv.period})`;
             const statusEl = document.getElementById('tn-modal-inv-status');
@@ -5299,11 +5278,11 @@
                             <div>
                                 <span class="text-[11px] font-bold text-blue-600 uppercase">THÔNG TIN HÓA ĐƠN TIỀN NHÀ</span>
                                 <h2 class="text-lg font-black text-slate-900 mt-0.5">${inv.id}</h2>
-                                <p class="text-slate-500">Kỳ thanh toán: <b class="text-slate-800">${inv.period}</b> | Ngày lập: <b class="text-slate-800">${inv.date}</b></p>
+                                <p class="text-slate-500">Kỳ thanh toán: <b class="text-slate-800">${inv.period}</b> | Ngày lập: <b class="text-slate-800">${formatInvoiceDate(inv.date)}</b></p>
                             </div>
                             <div class="bg-blue-50 px-3 py-2 rounded-xl border border-blue-200 text-right">
                                 <p class="font-bold text-blue-900">Phòng ${inv.roomId}</p>
-                                <p class="text-slate-600">${contract.tenantName}</p>
+                                <p class="text-slate-600">${inv.tenant?.name || contract.tenantName || 'Khách thuê'}</p>
                             </div>
                         </div>
 
@@ -5413,87 +5392,57 @@
         }
         window.viewTenantInvoiceDetail = viewTenantInvoiceDetail;
 
-        function submitTenantPayment() {
+        async function submitTenantPayment() {
             if (!currentActiveTenantInvId) return;
-            const inv = dbInvoices.find(i => i.id === currentActiveTenantInvId);
-            if (!inv) return;
-
-            // 1. Tự động chuyển trạng thái Hóa đơn sang "Đã thanh toán"
-            inv.status = 'Đã thanh toán';
-
-            // 2. Thêm vào nhật ký giao dịch với trạng thái "Đã thanh toán"
-            const now = new Date();
-            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-            const transactionId = 'GD' + Math.floor(10000 + Math.random() * 90000);
-            const refNo = 'FT' + Math.floor(10000000 + Math.random() * 90000000);
-
-            dbPayments.unshift({
-                id: transactionId,
-                invId: inv.id,
-                date: dateStr,
-                amount: inv.total,
-                method: 'VietQR MBBank',
-                refNo: refNo,
-                status: 'Đã thanh toán'
-            });
-
-            // 3. Đóng Modal & Cập nhật toàn bộ các màn hình liên quan
-            closeModal('modal-tenant-invoice-detail');
-
-            renderPayments();
-            renderInvoicesList();
-            renderTenantInvoices();
-            renderLandlordOverview(); // Cập nhật lại Thẻ Phòng tự động chuyển sang "Đã thanh toán đầy đủ"
-
-            showToast('Thanh toán VietQR thành công! Trạng thái phòng & hóa đơn đã được cập nhật.', 'success');
+            const inv = dbInvoices.find(item => item.id === currentActiveTenantInvId);
+            if (!inv || invoiceIsPaid(inv)) return;
+            const button = document.getElementById('btn-tn-pay-submit');
+            if (button) button.disabled = true;
+            try {
+                const result = await rtmsApiRequest('http://localhost:5000/api/payments/submit', { method: 'POST', body: JSON.stringify({ invId: inv.id, method: 'VietQR MBBank' }) });
+                const invoice = result.updatedInvoice;
+                Object.assign(inv, { status: 'Đã thanh toán', statusCode: invoice?.status || 'DA_THANH_TOAN' });
+                const payment = result.payment;
+                if (payment) dbPayments.unshift({ ...payment, date: formatInvoiceDate(payment.date), status: 'Đã thanh toán' });
+                closeModal('modal-tenant-invoice-detail'); renderPayments(); renderInvoicesList(); renderTenantInvoices(); renderLandlordOverview();
+                showToast('Y&#234;u c&#7847;u x&#225;c nh&#7853;n thanh to&#225;n &#273;&#227; &#273;&#432;&#7907;c l&#432;u.', 'success');
+            } catch (error) { showToast(error.message || 'Kh&#244;ng ghi nh&#7853;n &#273;&#432;&#7907;c thanh to&#225;n.', 'error'); }
+            finally { if (button) button.disabled = false; }
         }
         window.submitTenantPayment = submitTenantPayment;
 
+        async function refreshPaymentsFromApi() {
+            if (!getRtmsToken()) return;
+            try {
+                const payments = await rtmsApiRequest('http://localhost:5000/api/payments');
+                if (Array.isArray(payments)) dbPayments = payments;
+                renderPayments();
+            } catch (error) { console.warn('Payment history could not be refreshed:', error.message); }
+        }
+        async function confirmInvoicePaid(invoiceId) {
+            try {
+                const result = await rtmsApiRequest('http://localhost:5000/api/invoices/' + encodeURIComponent(invoiceId) + '/pay', { method: 'PATCH' });
+                const updated = result.invoice;
+                const index = dbInvoices.findIndex(item => item.id === invoiceId);
+                if (index >= 0) dbInvoices[index] = { ...dbInvoices[index], ...updated };
+                if (result.payment && !dbPayments.some(payment => payment.id === result.payment.id)) dbPayments.unshift({ ...result.payment, date: formatInvoiceDate(result.payment.date), status: 'Đã thanh toán' });
+                renderInvoicesList(); renderTenantInvoices(); renderLandlordOverview(); renderPayments();
+                if (document.getElementById('out-inv-code')?.textContent === invoiceId && index >= 0) displayInvoiceDetail(dbInvoices[index]);
+                if (currentActiveTenantInvId === invoiceId) viewTenantInvoiceDetail(invoiceId);
+                showToast('Đã xác nhận thanh toán và lưu giao dịch.', 'success');
+            } catch (error) { showToast(error.message || 'Không xác nhận được thanh toán.', 'error'); }
+        }
+        window.confirmInvoicePaid = confirmInvoicePaid;
         function renderPayments() {
             const tbody = document.getElementById('payments-tbody');
             if (!tbody) return;
             tbody.innerHTML = '';
-            if (dbPayments.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-400 italic">Chưa có giao dịch thanh toán nào.</td></tr>`;
-                return;
-            }
-            dbPayments.forEach(p => {
-                const isPaid = p.status === 'Đã thanh toán';
-                
-                const statusBadge = isPaid
-                    ? `<span class="bg-emerald-100 text-emerald-800 text-xs px-3 py-1 rounded-full font-bold inline-block text-center"><i class="fa-solid fa-circle-check mr-1"></i>Đã thanh toán</span>`
-                    : `<span class="bg-amber-100 text-amber-900 text-xs px-3 py-1 rounded-full font-bold inline-block text-center"><i class="fa-solid fa-clock mr-1"></i>Chờ thanh toán</span>`;
-
-                tbody.innerHTML += `
-                    <tr class="hover:bg-slate-50">
-                        <td class="p-3 font-mono font-bold text-slate-700">${p.id}</td>
-                        <td class="p-3 font-bold text-indigo-600">${p.invId}</td>
-                        <td class="p-3 text-slate-600">${p.date}</td>
-                        <td class="p-3 font-black text-emerald-600">${p.amount.toLocaleString()} đ</td>
-                        <td class="p-3 font-semibold text-slate-700">${p.method}</td>
-                        <td class="p-3 font-mono text-slate-500">${p.refNo}</td>
-                        <td class="p-3 text-center">${statusBadge}</td>
-                    </tr>
-                `;
+            if (!dbPayments.length) { tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-400 italic">Ch&#432;a c&#243; giao d&#7883;ch thanh to&#225;n n&#224;o.</td></tr>'; return; }
+            dbPayments.forEach(payment => {
+                const paid = String(payment.status || '').includes('THANH_TOAN') || String(payment.status || '').toLowerCase().includes('thanh to');
+                const badge = paid ? '<span class="bg-emerald-100 text-emerald-800 text-xs px-3 py-1 rounded-full font-bold">&#272;&#227; thanh to&#225;n</span>' : '<span class="bg-amber-100 text-amber-900 text-xs px-3 py-1 rounded-full font-bold">Ch&#7901; thanh to&#225;n</span>';
+                tbody.innerHTML += '<tr class="hover:bg-slate-50"><td class="p-3 font-mono font-bold text-slate-700">' + payment.id + '</td><td class="p-3 font-bold text-indigo-600">' + payment.invId + '</td><td class="p-3 text-slate-600">' + formatInvoiceDate(payment.date) + '</td><td class="p-3 font-black text-emerald-600">' + Number(payment.amount||0).toLocaleString() + ' &#273;</td><td class="p-3 font-semibold text-slate-700">' + (payment.method||'') + '</td><td class="p-3 font-mono text-slate-500">' + (payment.refNo||'') + '</td><td class="p-3 text-center">' + badge + '</td></tr>';
             });
-        }
-        window.renderPayments = renderPayments;
-
-        function confirmPayment(paymentId) {
-            const payment = dbPayments.find(p => p.id === paymentId);
-            if (!payment) return;
-
-            payment.status = 'Đã duyệt';
-
-            // Cập nhật hóa đơn tương ứng thành Đã thanh toán
-            const invoice = dbInvoices.find(i => i.id === payment.invId);
-            if (invoice) {
-                invoice.status = 'Đã thanh toán';
-            }
-
-            renderPayments();
-            renderInvoicesList();
-            showToast(`Đã xác nhận duyệt thanh toán cho giao dịch ${paymentId}!`, 'success');
         }
         window.confirmPayment = confirmPayment;
 

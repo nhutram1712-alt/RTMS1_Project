@@ -76,6 +76,7 @@ model User {
   room          Room?       @relation(fields: [roomId], references: [id])
   landlordProfile LandlordProfile?
   issues        Issue[]     @relation("UserIssues")
+  invoices      Invoice[]   @relation("InvoiceTenant")
 
   @@map("users")
 }
@@ -167,6 +168,7 @@ model Contract {
   updatedAt          DateTime       @updatedAt @map("updated_at")
 
   room               Room           @relation(fields: [roomId], references: [id])
+  invoices           Invoice[]
 
   @@map("contracts")
 }
@@ -183,11 +185,19 @@ model Invoice {
   elecNew         Decimal       @db.Decimal(12, 3) @map("elec_new")
   surcharge       Int           @default(0)
   surchargeReason String?       @map("surcharge_reason")
+  tenantId        String?       @map("tenant_id")
+  contractId      String?       @map("contract_id")
+  lineItems       Json?         @map("line_items")
   createdAt       DateTime      @default(now()) @map("created_at")
   updatedAt       DateTime      @updatedAt @map("updated_at")
 
   room            Room          @relation(fields: [roomId], references: [id])
+  tenant          User?         @relation("InvoiceTenant", fields: [tenantId], references: [id], onDelete: SetNull)
+  contract        Contract?     @relation(fields: [contractId], references: [id], onDelete: SetNull)
   payments        Payment[]
+
+  @@index([tenantId])
+  @@index([contractId])
 
   @@map("invoices")
 }
