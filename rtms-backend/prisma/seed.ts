@@ -26,13 +26,13 @@ async function main() {
     { id: '101', name: 'Phòng 101', floor: 1, area: 25.0, price: 2500000, status: 'DANG_THUE' as const, tenantName: 'Nguyễn Văn An' },
     { id: '102', name: 'Phòng 102', floor: 1, area: 25.0, price: 2500000, status: 'DANG_THUE' as const, tenantName: 'Trần Thị Bích' },
     { id: '103', name: 'Phòng 103', floor: 1, area: 28.0, price: 2800000, status: 'TRONG' as const },
-    { id: '201', name: 'Phòng 201', floor: 2, area: 25.0, price: 2600000, status: 'DANG_THUE' as const, tenantName: 'Lê Văn Cường' },
-    { id: '202', name: 'Phòng 202', floor: 2, area: 25.0, price: 2600000, status: 'DA_COC' as const, depositTenantName: 'Phạm Hoàng Nam', depositTenantPhone: '0988123456', depositTenantAmount: 2600000 },
+    { id: '201', name: 'Ph\u00f2ng 201', floor: 2, area: 25.0, price: 2600000, status: 'TRONG' as const },
+    { id: '202', name: 'Phòng 202', floor: 2, area: 25.0, price: 2600000, status: 'DA_COC' as const, depositTenantName: 'Phạm Hoàng Nam', depositTenantPhone: '0988123456', depositTenantAmount: 2600000, expectedMoveInDate: new Date('2026-12-01') },
     { id: '203', name: 'Phòng 203', floor: 2, area: 30.0, price: 3000000, status: 'SUA_CHUA' as const, repairContent: 'Sửa đường ống nước & sơn lại tường', repairTargetDate: new Date('2026-11-20'), repairNote: 'Đang chờ thợ vát tường' }
   ];
 
   for (const r of roomsData) {
-    await prisma.room.create({ data: r });
+    await prisma.room.create({ data: r as any });
   }
 
   // 4. Seed Landlord User & Profile

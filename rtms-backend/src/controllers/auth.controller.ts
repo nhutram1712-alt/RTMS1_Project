@@ -3,6 +3,8 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import prisma from '../config/db';
 import { JwtPayload } from '../types';
+import { randomInt } from 'crypto';
+import { sendPasswordResetOtp } from '../services/mail.service';
 
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -16,8 +18,12 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const user = await prisma.user.findUnique({
-      where: { username: username.trim() },
+    const normalizedLogin = String(username).trim().toLowerCase();
+    const user = await prisma.user.findFirst({
+      where: { OR: [
+        { username: { equals: normalizedLogin, mode: 'insensitive' } },
+        { email: { equals: normalizedLogin, mode: 'insensitive' } }
+      ] },
       include: {
         room: true,
         landlordProfile: true
@@ -32,7 +38,11 @@ export const login = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    if (role && user.role !== role) {
+    if (role !== 'LANDLORD' && role !== 'TENANT') {
+      res.status(400).json({ success: false, message: 'Vai trò đăng nhập không hợp lệ.' });
+      return;
+    }
+    if (user.role !== role) {
       res.status(401).json({
         success: false,
         message: `Tài khoản này không thuộc vai trò ${role === 'LANDLORD' ? 'Chủ Trọ' : 'Khách Thuê'}.`
@@ -97,37 +107,64 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 
 export const forgotPassword = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email } = req.body;
+    const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
     if (!email) {
-      res.status(400).json({
-        success: false,
-        message: 'Vui lòng cung cấp địa chỉ email đã đăng ký.'
-      });
+      res.status(400).json({ success: false, message: 'Vui lòng cung cấp địa chỉ email đã đăng ký.' });
       return;
     }
-
-    const user = await prisma.user.findFirst({
-      where: { email: email.trim() }
-    });
-
+    const user = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
     if (!user) {
-      res.status(404).json({
-        success: false,
-        message: 'Không tìm thấy tài khoản nào gắn với email này.'
-      });
+      res.status(404).json({ success: false, message: 'Email không tồn tại trong hệ thống' });
       return;
     }
-
-    // In production, send email reset link
-    res.status(200).json({
-      success: true,
-      message: `Liên kết khôi phục mật khẩu đã được gửi đến hộp thư ${email}. Vui lòng kiểm tra email của bạn.`
-    });
+    const otp = String(randomInt(100000, 1000000));
+    const resetOtpExpires = new Date(Date.now() + 3 * 60 * 1000);
+    await prisma.user.update({ where: { id: user.id }, data: { resetOtp: otp, resetOtpExpires } });
+    try {
+      await sendPasswordResetOtp(email, otp);
+    } catch (mailError) {
+      await prisma.user.update({ where: { id: user.id }, data: { resetOtp: null, resetOtpExpires: null } });
+      throw mailError;
+    }
+    res.status(200).json({ success: true, message: 'Mã xác nhận OTP đã được gửi đến email của bạn.', expiresInSeconds: 180 });
   } catch (error: any) {
     res.status(500).json({
       success: false,
       message: 'Lỗi gửi yêu cầu khôi phục mật khẩu: ' + error.message
     });
+  }
+};
+
+export const resetPassword = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const otp = typeof req.body.otp === 'string' ? req.body.otp.trim() : '';
+    const { newPassword, confirmPassword } = req.body;
+    if (typeof newPassword !== 'string' || typeof confirmPassword !== 'string' || newPassword.length < 6) {
+      res.status(400).json({ success: false, message: 'Mật khẩu mới phải có tối thiểu 6 ký tự.' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      res.status(400).json({ success: false, message: 'Xác nhận mật khẩu không khớp với mật khẩu mới' });
+      return;
+    }
+    const user = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
+    if (!user || !user.resetOtp || !user.resetOtpExpires || user.resetOtp !== otp || Date.now() > user.resetOtpExpires.getTime()) {
+      res.status(400).json({ success: false, message: 'Mã OTP không chính xác hoặc đã hết hạn (3 phút)' });
+      return;
+    }
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    const result = await prisma.user.updateMany({
+      where: { id: user.id, resetOtp: otp, resetOtpExpires: { gt: new Date() } },
+      data: { passwordHash, resetOtp: null, resetOtpExpires: null }
+    });
+    if (result.count !== 1) {
+      res.status(400).json({ success: false, message: 'Mã OTP không chính xác hoặc đã hết hạn (3 phút)' });
+      return;
+    }
+    res.status(200).json({ success: true, message: 'Cập nhật mật khẩu thành công. Vui lòng đăng nhập bằng mật khẩu mới.' });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: 'Lỗi đặt lại mật khẩu: ' + error.message });
   }
 };
 

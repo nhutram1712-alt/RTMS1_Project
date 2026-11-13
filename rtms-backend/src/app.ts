@@ -14,6 +14,7 @@ import postRoutes from './routes/post.routes';
 import issueRoutes from './routes/issue.routes';
 import chatRoutes from './routes/chat.routes';
 import aiRoutes from './routes/ai.routes';
+import { getBootstrap } from './controllers/bootstrap.controller';
 
 // Import Middlewares
 import { errorHandler } from './middlewares/error.middleware';
@@ -49,6 +50,7 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+app.get('/api/bootstrap', getBootstrap);
 
 // API Routes Mounting
 app.use('/api/auth', authRoutes);

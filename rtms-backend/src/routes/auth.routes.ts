@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   login,
   forgotPassword,
+  resetPassword,
   changePassword,
   getLandlordProfile,
   updateLandlordProfile
@@ -14,6 +15,7 @@ const router = Router();
 // Public auth routes
 router.post('/login', login);
 router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPassword);
 
 // Protected routes
 router.post('/change-password', authMiddleware, changePassword);
